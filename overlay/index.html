@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Котята</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:transparent}
+.cat,.box{position:absolute;left:0;top:0;will-change:transform}
+.spr{background-repeat:no-repeat;transform-origin:50% 94%}
+.box{background:url(sprites/box.webp) no-repeat;transform-origin:50% 98%}
+.name{position:absolute;left:50%;top:0;transform:translateX(-50%);white-space:nowrap;
+  font:700 19px/1 "Trebuchet MS",Arial,sans-serif;color:#fff;
+  text-shadow:-2px 0 #000,2px 0 #000,0 -2px #000,0 2px #000,-1px -1px #000,1px 1px #000,-1px 1px #000,1px -1px #000}
+/* облачко с сообщением: мягкое, без обводки, как котята */
+.bub{position:absolute;left:50%;bottom:100%;margin-bottom:4px;transform:translateX(-50%) scale(0);transform-origin:50% 100%;
+  width:max-content;max-width:190px;box-sizing:border-box;white-space:normal;text-shadow:none;padding:7px 12px 8px;border-radius:16px;
+  background:radial-gradient(120% 140% at 30% 15%,#fffdf8 0%,#fdf1e2 70%,#f6e2cd 100%);color:#6b4a35;
+  font:700 15px/1.2 "Trebuchet MS","Segoe UI",Arial,sans-serif;text-align:center;overflow-wrap:anywhere;
+  filter:drop-shadow(0 2px 3px rgba(60,35,15,.35));opacity:0;transition:transform .28s cubic-bezier(.3,1.6,.5,1),opacity .2s}
+.bub:after{content:"";position:absolute;left:50%;top:100%;margin:-1px 0 0 -8px;border:8px solid transparent;border-top:9px solid #f6e2cd;border-bottom:0}
+.bub.on{transform:translateX(-50%) scale(1);opacity:1}
+.zzz{position:absolute;right:14%;top:30%;font:700 17px Arial,sans-serif;color:#fff;text-shadow:0 0 3px #000;opacity:0}
+</style></head><body>
+<script>
+// Лист котёнка 7x2 кадра, коробка 3 кадра (см. tools/mksheet.py, tools/mkbox.py). Оригинал смотрит вправо.
+var COLS=7,ROWS=2;
+var F={walk:[0,1,2,3,4,5],stand:6,sit:7,blink:8,sleep:9,lick:10,stretch:11,lie:12,meow:13};
+var q=new URLSearchParams(location.search);
+if(q.get('bg'))document.body.style.background='#'+q.get('bg');
+var SIZE=+(q.get('size')||150),POSE=q.get('pose'),WALK_FPS=8,STEP=SIZE*0.6; // STEP — путь за цикл шага
+var FLOOR=SIZE*300/320;      // лапы стоят на этой высоте клетки → на нижней границе источника
+var BW=SIZE*300/320,BH=SIZE*240/320,JUMP=SIZE*0.62;   // коробка и длина прыжка из неё
+var CHAT_CHANNELS=(q.get('channel')||'').toLowerCase().split(',').map(function(c){return c.trim().replace(/^#/,'')}).filter(Boolean); // ?channel=ник или ?channel=ник1,ник2
+var IDLE_MS=(+q.get('idle')||120)*1000;          // не писал столько — котёнок уходит в коробку
+var MAX_CATS=+(q.get('max')||30);
+var BOTS=['streamelements','nightbot','moobot','fossabot','wizebot','streamlabs','sery_bot','soundalerts'].concat((q.get('ignore')||'').toLowerCase().split(',').filter(Boolean)); // ?ignore=свой_бот,ещё_один
+var SAY_MS=6000;             // сколько висит облачко
+var SAY_MAX=60;              // сообщения длиннее не показываются вовсе
+// Запретные слова (за них банит Twitch): сообщение с таким словом в облачко не попадает. Корни — по началу слова.
+var BAD_RU=['пид[оа]р','пидр','педик','педрил','гомик','гомосек','ниг+[еа]р$','ниг+[еа]р[ыауо]','ниг+а$','негр$','негр[ыауое]$','негров','неграм$','негритос','черномаз',
+  'хох[оа]?л','хохлу','жид$','жид[ыаоуе]','жидов','жидяр','чурк','чурбан','хач$','хач[иаейу]$','хачик','узкоглаз','черножоп',
+  'даун$','даун[ыаоуе]','даунит','аутист','инвалид','дебил','имбецил','олигофрен','куколд','симп$','симп[ыау]$','симпов','инцел','девственни',
+  'москал','кацап','русн[яюие]','свинособак','укроп[ыаоу]?$','бандеровц','трансух','транс$','транс[ыаоу]$','трап$','трап[ыаоу]$','шлюх','изнасил','суицид','выпились','убейся'];
+var BAD_EN=['pid[oa]r','pidr','pedik','hohol','hohl','xoxol','negr$','daun$','autist','nig+[ea]r','nig+a','negro','fag+ot','fag$','fags$','retard','tran+y','kike','chink','spic$','simp$','simps$','incel','virgin','cuck','rape','kys$','whore','slut'];
+var RU_LOOK={a:'а',b:'в',c:'с',e:'е',h:'н',k:'к',m:'м',o:'о',p:'р',t:'т',x:'х',y:'у','0':'о','3':'з','4':'ч','6':'б','@':'а','ё':'е'};
+var EN_LOOK={'а':'a','в':'b','с':'c','е':'e','н':'h','к':'k','м':'m','о':'o','р':'p','т':'t','х':'x','у':'y','0':'o','1':'i','3':'e','4':'a','@':'a','$':'s'};
+function words(text,look,alpha){
+  var t=text.toLowerCase().replace(/./g,function(ch){return look[ch]||ch}).replace(alpha,' ').replace(/(.)\1{2,}/g,'$1');
+  var out=[],run='';
+  t.split(/\s+/).forEach(function(w){                 // «п и д о р» — склеить буквы, набранные через пробел
+    if(w.length===1)run+=w;else{if(run){out.push(run);run=''}if(w)out.push(w)}});
+  if(run)out.push(run);return out;
+}
+function isBad(text){
+  function hit(ws,roots){return ws.some(function(w){return roots.some(function(r){return new RegExp('^'+r).test(w)})})}
+  return hit(words(text,RU_LOOK,/[^а-я]+/g),BAD_RU)||hit(words(text,EN_LOOK,/[^a-z]+/g),BAD_EN);
+}
+// Что показывать в облачке: без смайлов Twitch, не команда, не ссылка, не длинное, без запретных слов. null — не показывать
+function cleanSay(text,tags){
+  var m=text.match(/^\u0001ACTION (.*)\u0001$/);if(m)text=m[1];
+  if(tags&&tags.emotes){var ch=Array.from(text);
+    tags.emotes.split('/').forEach(function(e){(e.split(':')[1]||'').split(',').forEach(function(r){
+      var p=r.split('-');for(var i=+p[0];i<=+p[1];i++)ch[i]=''})});text=ch.join('')}
+  text=text.replace(/\s+/g,' ').trim();
+  if(!text||text[0]==='!'||text.length>SAY_MAX)return null;
+  if(/https?:|www\.|[a-zа-я0-9-]{2,}\.(ru|com|net|org|tv|gg|io|me|su|рф)\b/i.test(text))return null;
+  if(text.split(' ').some(function(w){return w.length>24}))return null;
+  if(isBad(text))return null;
+  return text;
+}
+function say(c,text){
+  if(!text)return;
+  if(c.mode==='fx'){c.pend=c.fx==='in'?text:null;return}   // вылезет из коробки — тогда скажет
+  c.bub.textContent=text;c.bub.classList.add('on');clearTimeout(c.sayT);
+  c.sayT=setTimeout(function(){c.bub.classList.remove('on')},SAY_MS);
+}
+var COATS=['ginger','tabby','black','white','calico','siamese'];
+var TEST=q.get('test');      // ?test=1 — шесть котят без чата; &fx=in|out&ft=1.2 — стоп-кадр эффекта; &fx=loop — по кругу
+if(TEST&&q.get('say'))document.head.appendChild(document.createElement('style')).textContent='.bub{transition:none}';
+var FXT=q.get('fx'),FT=q.get('ft');
+var W=innerWidth,H=innerHeight,LIVE=[],BY={},SHEET={};
+new Image().src='sprites/box.webp';   // чтобы первая коробка не появилась пустой
+COATS.forEach(function(k){var im=new Image();im.onload=function(){SHEET[k]=im.src;
+  if(TEST)addCat('test_'+k,{ginger:'Рыжик',tabby:'Барсик',black:'Уголёк',white:'Снежок',calico:'Мурка',siamese:'Сима'}[k],k)};
+  im.src='sprites/fluffy_'+k+'.webp'});
+function hash(s){var h=7;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0;return h}
+function boxEl(z){var b=document.createElement('div');b.className='box';b.style.width=BW+'px';b.style.height=BH+'px';
+  b.style.backgroundSize=(3*BW)+'px '+BH+'px';b.style.zIndex=z;b.style.display='none';document.body.appendChild(b);return b}
+function addCat(login,name,coat,text){
+  var have=COATS.filter(function(k){return SHEET[k]});
+  if(BY[login]||!have.length||LIVE.length>=MAX_CATS)return;
+  coat=coat||have[hash(login)%have.length];
+  var c={login:login,name:name,coat:coat},r=hash(login+'x')%1000/1000;
+  var el=document.createElement('div');el.className='cat';el.style.width=el.style.height=SIZE+'px';
+  var sp=document.createElement('div');sp.className='spr';
+  sp.style.cssText='width:'+SIZE+'px;height:'+SIZE+'px;background-image:url('+SHEET[coat]+');background-size:'+(COLS*SIZE)+'px '+(ROWS*SIZE)+'px';
+  var nm=document.createElement('div');nm.className='name';nm.textContent=name;
+  var zz=document.createElement('div');zz.className='zzz';zz.textContent='z z';
+  var bub=document.createElement('div');bub.className='bub';nm.appendChild(bub);
+  el.appendChild(sp);el.appendChild(nm);el.appendChild(zz);document.body.appendChild(el);c.bub=bub;
+  var d=Math.round(r*6);c.z=d*4+2;el.style.zIndex=c.z;
+  c.el=el;c.sp=sp;c.zz=zz;c.nm=nm;c.back=boxEl(c.z-1);c.front=boxEl(c.z+1);
+  c.x=TEST?20+(W-SIZE-40)*(COATS.indexOf(coat)/5.2):20+JUMP+(W-SIZE-40-2*JUMP)*r;
+  c.y=H-FLOOR-d;c.dir=LIVE.length%2?1:-1;
+  c.until=POSE?1e9:3+r*8;c.ph=r*5;c.blink=2;c.pop=0;c.said=Date.now();
+  c.mode=POSE||'walk';
+  if(!TEST||FXT)startFx(c,FXT==='out'?'out':'in');
+  LIVE.push(c);BY[login]=c;
+  say(c,text||(TEST&&q.get('say')));
+}
+// Коробка: 'in' — появилась, трясётся, открылась, котёнок выглянул и выпрыгнул; 'out' — запрыгнул, закрылась, исчезла
+function startFx(c,type){
+  c.mode='fx';c.fx=type;c.ft=0;c.zz.style.opacity=0;
+  if(type==='in'){c.bx=c.x;c.x0=c.x;c.x1=Math.max(5,Math.min(W-SIZE-5,c.x+c.dir*JUMP));if(c.x1===c.x)c.x1=c.x-c.dir*JUMP}
+  else{c.x0=c.x;c.bx=Math.max(5,Math.min(W-SIZE-5,c.x+c.dir*JUMP));if(c.bx===c.x){c.dir=-c.dir;c.bx=c.x+c.dir*JUMP}}
+  if(c.x1!==undefined&&type==='in')c.dir=c.x1>c.x0?1:-1;
+}
+function ease(t){return t<0?0:t>1?1:t*t*(3-2*t)}
+function back(t){t=Math.max(0,Math.min(1,t));var s=1.7;t-=1;return t*t*((s+1)*t+s)+1}   // с перелётом
+function fxFrame(c){
+  var t=c.ft,o={bs:1,rot:0,open:0,kx:c.x0,ky:0,kv:1,kz:0,fr:F.sit,done:0},IN=0.62*SIZE,PEEK=-0.16*SIZE;  // IN — спрятан в коробке, PEEK — сидит в ней
+  if(c.fx==='in'){
+    if(t<0.3){o.bs=back(t/0.3);o.kv=0}
+    else if(t<1.0){o.rot=Math.sin((t-0.3)*30)*5*(1-Math.abs((t-0.65)/0.35)*0.4);o.kv=0}
+    else if(t<1.6){o.open=1;o.bs=1+0.08*Math.sin(Math.min(1,(t-1)/0.2)*Math.PI);o.kx=c.bx;o.ky=IN-(IN-PEEK)*back((t-1.05)/0.4);o.kv=t>1.05?1:0}
+    else if(t<2.15){var k=(t-1.6)/0.55;o.open=1;o.kz=k>0.25?1:0;o.fr=F.walk[0];
+      o.kx=c.bx+(c.x1-c.bx)*k;o.ky=PEEK*(1-k)-Math.sin(k*Math.PI)*0.42*SIZE}
+    else if(t<2.5){o.open=1;o.kx=c.x1;o.kz=1;o.bs=1-ease((t-2.15)/0.35);o.fr=F.stand}
+    else{o.kx=c.x1;o.bs=0;o.done=1;o.fr=F.stand}
+  }else{
+    if(t<0.3){o.open=1;o.bs=back(t/0.3);o.kz=1;o.fr=F.stand}
+    else if(t<0.9){var k=(t-0.3)/0.6;o.open=1;o.kz=k<0.7?1:0;o.fr=F.walk[0];
+      o.kx=c.x0+(c.bx-c.x0)*k;o.ky=PEEK*k-Math.sin(k*Math.PI)*0.45*SIZE}
+    else if(t<1.5){o.open=1;o.kx=c.bx;o.ky=PEEK+(IN-PEEK)*ease((t-1.1)/0.4)}
+    else if(t<2.0){o.kv=0;o.rot=Math.sin((t-1.5)*30)*4;o.bs=1+0.06*Math.sin(Math.min(1,(t-1.5)/0.2)*Math.PI)}
+    else if(t<2.35){o.kv=0;o.bs=1-ease((t-2.0)/0.35)}
+    else{o.kv=0;o.bs=0;o.done=1}
+  }
+  return o;
+}
+// Анонимный IRC Twitch (justinfan, только чтение)
+function connectChat(){
+  var ws;try{ws=new WebSocket('wss://irc-ws.chat.twitch.tv:443')}catch(e){setTimeout(connectChat,5000);return}
+  ws.onopen=function(){['CAP REQ :twitch.tv/tags','PASS SCHMOOPIIE','NICK justinfan'+(10000+Math.floor(Math.random()*80000)),
+    'JOIN '+CHAT_CHANNELS.map(function(c){return '#'+c}).join(',')].forEach(function(x){ws.send(x)})};
+  ws.onmessage=function(ev){ev.data.split('\r\n').forEach(function(line){
+    if(line.indexOf('PING')===0){ws.send('PONG :tmi.twitch.tv');return}
+    var m=line.match(/^(?:@(\S+) )?:(\w+)!\S+ PRIVMSG #\w+ :(.*)$/);if(!m)return;
+    var tags={};(m[1]||'').split(';').forEach(function(t){var p=t.indexOf('=');tags[t.slice(0,p)]=t.slice(p+1)});
+    var login=m[2],c=BY[login];
+    if(BOTS.indexOf(login)>=0||/bot$/.test(login)||/(^|,)bot-badge\//.test(tags.badges||''))return;
+    var text=cleanSay(m[3],tags);
+    if(!c)addCat(login,tags['display-name']||login,null,text);
+    else{c.said=Date.now();if(c.fx==='out'&&c.mode==='fx'){c.again=1;c.againSay=text}else say(c,text)}   // написал, пока уходил, — вернётся
+  })};
+  ws.onclose=function(){setTimeout(connectChat,5000)};
+}
+if(!TEST&&!CHAT_CHANNELS.length)document.body.innerHTML='<p style="font:20px sans-serif;color:#fff;background:#000a;padding:8px">Котята: добавьте в адрес ?channel=ваш_ник_на_twitch</p>';
+else if(!TEST)connectChat();
+setInterval(function(){if(TEST)return;var now=Date.now();
+  LIVE.forEach(function(c){if(c.mode!=='fx'&&now-c.said>IDLE_MS){c.bub.classList.remove('on');startFx(c,'out')}})},1000);
+function go(c,mode,t){c.mode=mode;c.until=t;c.pop=1}
+function next(c){
+  var r=Math.random();
+  if(c.mode==='walk')go(c,'stand',0.8+r*1.5);
+  else if(c.mode==='stand'){
+    if(c.wasWalk){c.wasWalk=0;if(r<0.2)go(c,'stretch',1.6);else go(c,'sit',4+r*8)}
+    else{go(c,'walk',15+r*25);c.wasWalk=1;if(Math.random()<0.4)c.dir=-c.dir}
+  }
+  else if(c.mode==='stretch')go(c,'stand',0.5);
+  else if(c.mode==='sit'){
+    if(r<0.25)go(c,'lick',2.5);else if(r<0.4)go(c,'meow',0.9);else if(r<0.65)go(c,'lie',5+r*6);else go(c,'stand',0.5);
+  }
+  else if(c.mode==='lick'||c.mode==='meow')go(c,'sit',2+r*4);
+  else if(c.mode==='lie'){if(r<0.4)go(c,'sleep',12+r*25);else go(c,'sit',2)}
+  else go(c,'lie',2+r*2);                                     // проснулся
+}
+function setBox(b,c,o,frame){
+  if(o.bs<=0){b.style.display='none';return}
+  b.style.display='block';b.style.backgroundPosition=(-frame*BW)+'px 0';
+  b.style.transform='translate('+Math.round(c.bx+(SIZE-BW)/2)+'px,'+Math.round(c.y+FLOOR-BH+BH*4/240)+'px) rotate('+o.rot+'deg) scale('+o.bs+')';
+}
+var last=performance.now()/1000;
+function tick(){
+  var now=performance.now()/1000,dt=Math.min(0.1,now-last);last=now;
+  for(var i=LIVE.length-1;i>=0;i--){
+    var c=LIVE[i],fr,bob=0,sy=1,kx,ky=0,vis=1,inbox=0;c.ph+=dt;c.pop=Math.max(0,c.pop-dt*6);
+    if(c.mode==='fx'){
+      if(FT!==null)c.ft=+FT;else c.ft+=dt;
+      var o=fxFrame(c);
+      setBox(c.back,c,o,o.open?1:0);setBox(c.front,c,o,2);if(!o.open)c.front.style.display='none';
+      c.el.style.zIndex=o.kz?c.z+2:c.z;fr=o.fr;kx=o.kx;ky=o.ky;vis=o.kv;inbox=!o.kz;
+      if(o.done){
+        if(c.fx==='in'){c.x=c.x1;c.fx=null;go(c,'stand',0.6);c.wasWalk=0;if(FXT==='loop')c.said=0;if(c.pend){say(c,c.pend);c.pend=null}}
+        else{c.el.remove();c.back.remove();c.front.remove();delete BY[c.login];LIVE.splice(i,1);
+          if(c.again||FXT==='loop')addCat(c.login,c.name,c.coat,c.againSay);continue}
+      }
+    }else{
+      c.until-=dt;if(c.until<0)next(c);
+      if(FXT==='loop'&&c.said===0&&c.mode==='sit'){c.said=1;startFx(c,'out');continue}
+      if(c.mode==='walk'){
+        c.wasWalk=1;
+        var k=c.ph*WALK_FPS;fr=F.walk[Math.floor(k)%6];
+        c.x+=c.dir*STEP*WALK_FPS/6*dt;bob=-Math.abs(Math.sin(k*Math.PI/3))*SIZE*0.012;
+        if(c.x<5){c.x=5;c.dir=1}
+        if(c.x>W-SIZE-5){c.x=W-SIZE-5;c.dir=-1}
+      }else if(c.mode==='sleep'){fr=F.sleep;sy=1+Math.sin(c.ph*1.6)*0.03}
+      else if(c.mode==='lick'){fr=F.lick;bob=Math.sin(c.ph*9)*SIZE*0.008}
+      else if(c.mode==='sit'){
+        c.blink-=dt;if(c.blink<-0.16)c.blink=2+Math.random()*4;
+        fr=c.blink<0?F.blink:F.sit;sy=1+Math.sin(c.ph*2.2)*0.012;
+      }else{fr=F[c.mode];sy=1+Math.sin(c.ph*2.2)*0.012}
+      sy*=1-c.pop*0.07;                                        // мягкая смена позы
+      kx=c.x;c.zz.style.opacity=c.mode==='sleep'?0.5+0.5*Math.sin(c.ph*1.6):0;
+    }
+    c.sp.style.backgroundPosition=(-(fr%COLS)*SIZE)+'px '+(-Math.floor(fr/COLS)*SIZE)+'px';
+    c.sp.style.transform='translateY('+bob+'px) scale('+c.dir+','+sy+')';
+    c.el.style.visibility=vis?'visible':'hidden';
+    var side=fr===F.sit?'18%':'0';c.el.style.clipPath=inbox?'inset(-40px '+side+' '+Math.max(0,SIZE-FLOOR+ky)+'px '+side+')':'none';c.nm.style.opacity=ky>0.3*SIZE?0:1;   // в коробке не торчит по бокам
+    c.el.style.transform='translate('+Math.round(kx)+'px,'+Math.round(c.y+ky)+'px)';
+  }
+  requestAnimationFrame(tick);
+}
+tick();
+</script></body></html>
